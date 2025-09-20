@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  InventoryMonitorFimSample - Demonstrates how to use AWS Systems Manager Inventory 
+  and Lambda for File Integrity Monitoring with Security Hub and Security Lake.
+
+Resources:
+  InventoryMonitorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSSecurityHubFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  InventoryMonitorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: InventoryMonitorFimSample
+      Runtime: python3.12
+      Role: !GetAtt InventoryMonitorLambdaRole.Arn
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: PLACEHOLDER-BUCKET-NAME
+        S3Key: PLACEHOLDER-ZIP-FILE
+      Layers:
+        - !Ref InventoryMonitorLayer
+      Environment:
+        Variables:
+          FILE_PATTERNS: "/etc/passwd,/etc/shadow"
+          FINDING_SEVERITY: "MEDIUM"
+
+  InventoryMonitorLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: inventory-monitor-helpers
+      CompatibleRuntimes:
+        - python3.12
+      Content:
+        S3Bucket: PLACEHOLDER-BUCKET-NAME
+        S3Key: PLACEHOLDER-LAYER-ZIP
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref InventoryMonitorLambda
+    Description: Name of the Lambda function
