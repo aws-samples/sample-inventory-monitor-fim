@@ -1,10 +1,36 @@
 AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
 Description: >
-  InventoryMonitorFimSample - Demonstrates how to use AWS Systems Manager Inventory 
-  and Lambda for File Integrity Monitoring with Security Hub and Security Lake.
+  File Integrity Monitoring solution using AWS Systems Manager Inventory to collect 
+  file metadata from EC2 instances. Metadata is synced to a versioned S3 bucket via 
+  SSM Resource Data Sync. S3 Event Notifications trigger a Lambda function that compares 
+  inventory versions to detect file changes. Findings are sent to AWS Security Hub and 
+  ingested by Amazon Security Lake in OCSF format for centralized analysis with Amazon 
+  Athena, QuickSight, and OpenSearch Service.
+
+Parameters:
+  InventoryBucketName:
+    Type: String
+    Description: Name of the S3 bucket where SSM Inventory data is stored (must have versioning enabled)
+  
+  CriticalFilePatterns:
+    Type: String
+    Default: "^/etc/.*$"
+    Description: Comma-separated regex patterns for critical files to monitor (e.g., ^/etc/paymentapp/config.*$)
+  
+  FindingSeverity:
+    Type: String
+    Default: "MEDIUM"
+    AllowedValues:
+      - "INFORMATIONAL"
+      - "LOW"
+      - "MEDIUM"
+      - "HIGH"
+      - "CRITICAL"
+    Description: Severity level for Security Hub findings
 
 Resources:
-  InventoryMonitorLambdaRole:
+  FimChangeDetectorRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -16,38 +42,79 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
-        - arn:aws:iam::aws:policy/AWSSecurityHubFullAccess
-        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+        - PolicyName: FimChangeDetectorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: securityhub:BatchImportFindings
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucketVersions
+                  - s3:DeleteObjectVersion
+                Resource:
+                  - !Sub "arn:aws:s3:::${InventoryBucketName}"
+                  - !Sub "arn:aws:s3:::${InventoryBucketName}/*"
 
-  InventoryMonitorLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: InventoryMonitorFimSample
-      Runtime: python3.12
-      Role: !GetAtt InventoryMonitorLambdaRole.Arn
-      Handler: lambda_function.lambda_handler
-      Code:
-        S3Bucket: PLACEHOLDER-BUCKET-NAME
-        S3Key: PLACEHOLDER-ZIP-FILE
-      Layers:
-        - !Ref InventoryMonitorLayer
-      Environment:
-        Variables:
-          FILE_PATTERNS: "/etc/passwd,/etc/shadow"
-          FINDING_SEVERITY: "MEDIUM"
-
-  InventoryMonitorLayer:
+  FimChangeDetectorLayer:
     Type: AWS::Lambda::LayerVersion
     Properties:
-      LayerName: inventory-monitor-helpers
+      LayerName: fim-change-detector-helpers
+      Description: Helper functions for File Integrity Monitoring
       CompatibleRuntimes:
+        - python3.13
         - python3.12
       Content:
-        S3Bucket: PLACEHOLDER-BUCKET-NAME
-        S3Key: PLACEHOLDER-LAYER-ZIP
+        S3Bucket: !Ref InventoryBucketName
+        S3Key: layer/helpers_layer.zip
+
+  FimChangeDetectorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fim-change-detector
+      Description: Detects file changes by comparing SSM Inventory versions and creates Security Hub findings
+      Runtime: python3.13
+      Role: !GetAtt FimChangeDetectorRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref InventoryBucketName
+        S3Key: lambda/fim-change-detector.zip
+      Layers:
+        - !Ref FimChangeDetectorLayer
+      Environment:
+        Variables:
+          CRITICAL_FILE_PATTERNS: !Ref CriticalFilePatterns
+          SEVERITY_LABEL: !Ref FindingSeverity
+
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FimChangeDetectorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${InventoryBucketName}"
 
 Outputs:
   LambdaFunctionName:
-    Value: !Ref InventoryMonitorLambda
-    Description: Name of the Lambda function
+    Description: Name of the Lambda function for file integrity monitoring
+    Value: !Ref FimChangeDetectorFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionName"
+  
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt FimChangeDetectorFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionArn"
+  
+  LayerVersionArn:
+    Description: ARN of the Lambda Layer with helper functions
+    Value: !Ref FimChangeDetectorLayer
+    Export:
+      Name: !Sub "${AWS::StackName}-LayerArn"
