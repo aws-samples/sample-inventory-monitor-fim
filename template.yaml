@@ -1,22 +1,27 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
 Description: >
   File Integrity Monitoring solution using AWS Systems Manager Inventory to collect 
-  file metadata from EC2 instances. Metadata is synced to a versioned S3 bucket via 
-  SSM Resource Data Sync. S3 Event Notifications trigger a Lambda function that compares 
-  inventory versions to detect file changes. Findings are sent to AWS Security Hub and 
-  ingested by Amazon Security Lake in OCSF format for centralized analysis with Amazon 
-  Athena, QuickSight, and OpenSearch Service.
+  file metadata from EC2 instances.a
 
 Parameters:
-  InventoryBucketName:
+  DeploymentBucketName:
     Type: String
-    Description: Name of the S3 bucket where SSM Inventory data is stored (must have versioning enabled)
+    Description: Name of the S3 bucket where Lambda code and layer packages are stored
+  
+  InventorySchedule:
+    Type: String
+    Default: "rate(30 minutes)"
+    Description: Schedule expression for SSM Inventory collection (e.g., rate(30 minutes), cron(0 */6 * * ? *))
+  
+  MonitoredPath:
+    Type: String
+    Default: "/etc/paymentapp/"
+    Description: File system path to monitor for changes (e.g., /etc/paymentapp/, /etc/)
   
   CriticalFilePatterns:
     Type: String
-    Default: "^/etc/.*$"
-    Description: Comma-separated regex patterns for critical files to monitor (e.g., ^/etc/paymentapp/config.*$)
+    Default: "^/etc/paymentapp/config.*$"
+    Description: Comma-separated regex patterns for critical files to monitor (e.g., ^/etc/paymentapp/config.*$,^/etc/passwd$)
   
   FindingSeverity:
     Type: String
@@ -30,6 +35,90 @@ Parameters:
     Description: Severity level for Security Hub findings
 
 Resources:
+  # S3 Bucket for SSM Inventory Data
+  InventoryBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "inventorymonitorfim-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  InventoryBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InventoryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SSMBucketPermissionsCheck
+            Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt InventoryBucket.Arn
+          - Sid: SSMBucketDelivery
+            Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${InventoryBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:ssm:*:${AWS::AccountId}:resource-data-sync/*"
+
+  # SSM Resource Data Sync
+  InventoryResourceDataSync:
+    Type: AWS::SSM::ResourceDataSync
+    DependsOn: InventoryBucketPolicy
+    Properties:
+      SyncName: !Sub "${AWS::StackName}-inventory-sync"
+      S3Destination:
+        BucketName: !Ref InventoryBucket
+        BucketRegion: !Ref AWS::Region
+        SyncFormat: JsonSerDe
+
+  # SSM Inventory Association
+  InventoryAssociation:
+    Type: AWS::SSM::Association
+    Properties:
+      Name: AWS-GatherSoftwareInventory
+      AssociationName: !Sub "${AWS::StackName}-file-inventory"
+      ScheduleExpression: !Ref InventorySchedule
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - "*"
+      Parameters:
+        applications:
+          - Disabled
+        awsComponents:
+          - Disabled
+        customInventory:
+          - Disabled
+        files:
+          - !Sub |
+            [{"Path":"${MonitoredPath}","Pattern":["*"],"Recursive":true}]
+        instanceDetailedInformation:
+          - Disabled
+        networkConfig:
+          - Disabled
+        services:
+          - Disabled
+        windowsRegistry:
+          - Disabled
+        windowsRoles:
+          - Disabled
+        windowsUpdates:
+          - Disabled
+
   FimChangeDetectorRole:
     Type: AWS::IAM::Role
     Properties:
@@ -57,8 +146,8 @@ Resources:
                   - s3:ListBucketVersions
                   - s3:DeleteObjectVersion
                 Resource:
-                  - !Sub "arn:aws:s3:::${InventoryBucketName}"
-                  - !Sub "arn:aws:s3:::${InventoryBucketName}/*"
+                  - !GetAtt InventoryBucket.Arn
+                  - !Sub "${InventoryBucket.Arn}/*"
 
   FimChangeDetectorLayer:
     Type: AWS::Lambda::LayerVersion
@@ -69,7 +158,7 @@ Resources:
         - python3.13
         - python3.12
       Content:
-        S3Bucket: !Ref InventoryBucketName
+        S3Bucket: !Ref DeploymentBucketName
         S3Key: layer/helpers_layer.zip
 
   FimChangeDetectorFunction:
@@ -83,7 +172,7 @@ Resources:
       Timeout: 60
       MemorySize: 256
       Code:
-        S3Bucket: !Ref InventoryBucketName
+        S3Bucket: !Ref DeploymentBucketName
         S3Key: lambda/fim-change-detector.zip
       Layers:
         - !Ref FimChangeDetectorLayer
@@ -98,9 +187,125 @@ Resources:
       FunctionName: !Ref FimChangeDetectorFunction
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::${InventoryBucketName}"
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::inventorymonitorfim-${AWS::AccountId}-${AWS::Region}"
+
+  ConfigureS3NotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketNotification
+                  - s3:GetBucketNotification
+                Resource: !GetAtt InventoryBucket.Arn
+
+  ConfigureS3NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt ConfigureS3NotificationRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib3
+          
+          s3 = boto3.client('s3')
+          http = urllib3.PoolManager()
+          
+          def send_response(event, context, status, reason=None):
+              response_body = {
+                  'Status': status,
+                  'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': {}
+              }
+              http.request('PUT', event['ResponseURL'], body=json.dumps(response_body))
+          
+          def handler(event, context):
+              try:
+                  bucket = event['ResourceProperties']['Bucket']
+                  lambda_arn = event['ResourceProperties']['LambdaArn']
+                  
+                  if event['RequestType'] == 'Delete':
+                      # Remove notification
+                      s3.put_bucket_notification_configuration(
+                          Bucket=bucket,
+                          NotificationConfiguration={}
+                      )
+                      send_response(event, context, 'SUCCESS')
+                      return
+                  
+                  # Add notification
+                  s3.put_bucket_notification_configuration(
+                      Bucket=bucket,
+                      NotificationConfiguration={
+                          'LambdaFunctionConfigurations': [{
+                              'LambdaFunctionArn': lambda_arn,
+                              'Events': ['s3:ObjectCreated:Put'],
+                              'Filter': {
+                                  'Key': {
+                                      'FilterRules': [{
+                                          'Name': 'prefix',
+                                          'Value': 'AWS:File/'
+                                      }]
+                                  }
+                              }
+                          }]
+                      }
+                  )
+                  send_response(event, context, 'SUCCESS')
+              except Exception as e:
+                  send_response(event, context, 'FAILED', str(e))
+
+  ConfigureS3Notification:
+    Type: Custom::S3Notification
+    DependsOn:
+      - S3InvokeLambdaPermission
+      - ConfigureS3NotificationFunction
+    Properties:
+      ServiceToken: !GetAtt ConfigureS3NotificationFunction.Arn
+      Bucket: !Ref InventoryBucket
+      LambdaArn: !GetAtt FimChangeDetectorFunction.Arn
 
 Outputs:
+  InventoryBucketName:
+    Description: S3 bucket where SSM Inventory data is stored
+    Value: !Ref InventoryBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-InventoryBucket"
+  
+  ResourceDataSyncName:
+    Description: Name of the SSM Resource Data Sync
+    Value: !Ref InventoryResourceDataSync
+    Export:
+      Name: !Sub "${AWS::StackName}-DataSync"
+  
+  InventoryAssociationId:
+    Description: ID of the SSM Inventory Association
+    Value: !Ref InventoryAssociation
+    Export:
+      Name: !Sub "${AWS::StackName}-Association"
+  
   LambdaFunctionName:
     Description: Name of the Lambda function for file integrity monitoring
     Value: !Ref FimChangeDetectorFunction
@@ -118,3 +323,7 @@ Outputs:
     Value: !Ref FimChangeDetectorLayer
     Export:
       Name: !Sub "${AWS::StackName}-LayerArn"
+  
+  DeploymentRegion:
+    Description: AWS Region where the solution is deployed
+    Value: !Ref AWS::Region
