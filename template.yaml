@@ -26,12 +26,6 @@ Parameters:
   FindingSeverity:
     Type: String
     Default: "MEDIUM"
-    AllowedValues:
-      - "INFORMATIONAL"
-      - "LOW"
-      - "MEDIUM"
-      - "HIGH"
-      - "CRITICAL"
     Description: Severity level for Security Hub findings
 
 Resources:
@@ -217,65 +211,12 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Runtime: python3.13
-      Handler: index.handler
+      Handler: configure_s3_notification.handler
       Role: !GetAtt ConfigureS3NotificationRole.Arn
       Timeout: 60
       Code:
-        ZipFile: |
-          import json
-          import boto3
-          import urllib3
-          
-          s3 = boto3.client('s3')
-          http = urllib3.PoolManager()
-          
-          def send_response(event, context, status, reason=None):
-              response_body = {
-                  'Status': status,
-                  'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
-                  'PhysicalResourceId': context.log_stream_name,
-                  'StackId': event['StackId'],
-                  'RequestId': event['RequestId'],
-                  'LogicalResourceId': event['LogicalResourceId'],
-                  'Data': {}
-              }
-              http.request('PUT', event['ResponseURL'], body=json.dumps(response_body))
-          
-          def handler(event, context):
-              try:
-                  bucket = event['ResourceProperties']['Bucket']
-                  lambda_arn = event['ResourceProperties']['LambdaArn']
-                  
-                  if event['RequestType'] == 'Delete':
-                      # Remove notification
-                      s3.put_bucket_notification_configuration(
-                          Bucket=bucket,
-                          NotificationConfiguration={}
-                      )
-                      send_response(event, context, 'SUCCESS')
-                      return
-                  
-                  # Add notification
-                  s3.put_bucket_notification_configuration(
-                      Bucket=bucket,
-                      NotificationConfiguration={
-                          'LambdaFunctionConfigurations': [{
-                              'LambdaFunctionArn': lambda_arn,
-                              'Events': ['s3:ObjectCreated:Put'],
-                              'Filter': {
-                                  'Key': {
-                                      'FilterRules': [{
-                                          'Name': 'prefix',
-                                          'Value': 'AWS%3AFile/'
-                                      }]
-                                  }
-                              }
-                          }]
-                      }
-                  )
-                  send_response(event, context, 'SUCCESS')
-              except Exception as e:
-                  send_response(event, context, 'FAILED', str(e))
+        S3Bucket: !Ref DeploymentBucketName
+        S3Key: lambda/configure-s3-notification.zip
 
   ConfigureS3Notification:
     Type: Custom::S3Notification
