@@ -266,7 +266,7 @@ Resources:
                                   'Key': {
                                       'FilterRules': [{
                                           'Name': 'prefix',
-                                          'Value': 'AWS:File/'
+                                          'Value': 'AWS%3AFile/'
                                       }]
                                   }
                               }

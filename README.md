@@ -1,6 +1,6 @@
 # sample-inventory-monitor-fim
 
-> **⚠️ Note:** This is an implementation for demonstration and learning purposes. It is a sample and not production-ready tool.
+> **⚠️ Note:** This is an implementation for demonstration an purposes. It is a sample and not production-ready tool.
 
 ## Overview
 
@@ -32,18 +32,13 @@ This sample solution uses the following AWS services:
 ### Prerequisites
 
 **AWS Services (Must be enabled before deployment):**
-- ✅ **AWS Security Hub CSPM ** - Must be enabled in the target Region. Open the Security Hub CSPM console and enable it if it isn’t already enabled.
+- ✅ **AWS Security Hub CSPM** - Must be enabled in the target Region. Open the Security Hub CSPM console and enable it if it isn’t already enabled.
 
 **Local Requirements:**
 - AWS CLI configured with appropriate credentials and valid region
 - Python 3.9+ and pip installed
 - S3 bucket for Lambda deployment packages
-- IAM permissions to create CloudFormation stacks, Lambda functions, IAM roles, S3 buckets, and SSM resources
-
-**Important Notes:**
-- Ensure your AWS CLI region is valid (not a profile name)
-- Check with: `aws configure get region`
-- S3 bucket names must be globally unique and lowercase
+- The IAM principal running the deployment must be allowed to create CloudFormation stacks, Lambda functions, IAM roles, S3 buckets, and SSM resources.
 
 **What Gets Deployed Automatically:**
 - ✅ **S3 bucket** - Stores file metadata collected from EC2 instances (with versioning to track changes over time)
@@ -51,10 +46,6 @@ This sample solution uses the following AWS services:
 - ✅ **SSM Inventory Association** - Schedules regular file metadata collection from all EC2 instances
 - ✅ **Lambda function and Layer** - Serverless code that compares file versions and detects changes
 - ✅ **S3 Event Notification** - Automatically triggers the Lambda function when new inventory data arrives
-
-**What You Need to Provide:**
-- EC2 instance(s) with SSM agent for testing (see [Testing](#testing-the-solution))
-- IAM role for EC2 with `AmazonSSMManagedInstanceCore` policy
 
 ### Deployment Steps
 
@@ -91,12 +82,10 @@ This sample solution uses the following AWS services:
    ```
    
    **Options (configure Lambda function behavior):**
-   - `--monitored-path` - Which directory path to monitor for file changes (default: `/etc/paymentapp/`)
+   - `--monitored-path` - Which file path to monitor for file changes (default: `/etc/paymentapp/`)
    - `--file-patterns` - Regex patterns to identify critical files that trigger alerts (default: `^/etc/paymentapp/config.*$`)
-   - `--severity` - Severity level for Security Hub alerts (default: `MEDIUM`)
+   - `--severity` - Severity level for Security Hub findings (default: `MEDIUM`)
    - `--schedule` - How often to collect file metadata (default: `rate(30 minutes)`)
-
-   **Note:** The solution deploys to your default AWS CLI region. Set `AWS_DEFAULT_REGION` environment variable to change the region.
 
    **Examples:**
    
@@ -122,11 +111,6 @@ This sample solution uses the following AWS services:
 After deployment, verify the stack outputs:
 ```bash
 aws cloudformation describe-stacks --stack-name InventoryMonitorFimSample --query 'Stacks[0].Outputs'
-```
-
-Check which region the stack was deployed to:
-```bash
-aws cloudformation describe-stacks --stack-name InventoryMonitorFimSample --query 'Stacks[0].Outputs[?OutputKey==`DeploymentRegion`].OutputValue' --output text
 ```
 
 You should see:
@@ -180,21 +164,9 @@ The SSM Inventory Association runs on the schedule you configured (default: ever
 
 ### Step 4: Verify Finding
 
-1. **Check Security Hub:**
-   - Go to Security Hub → Findings
-   - Look for finding with title: "File changes detected via SSM Inventory"
-
-2. **Expected finding:**
-   ```json
-   {
-     "Id": "fim-i-0b8f40f4de065deba-2025-07-12T13:48:31.741Z",
-     "Types": ["Software and Configuration Checks/File Integrity Monitoring"],
-     "Severity": {"Label": "MEDIUM"},
-     "Title": "File changes detected via SSM Inventory",
-     "Description": "0 created, 1 modified, 0 deleted file(s) on instance i-0b8f40f4de065deba",
-     "Resources": [{"Type": "AwsEc2Instance", "Id": "i-0b8f40f4de065deba"}]
-   }
-   ```
+**Check Security Hub:**
+- Go to Security Hub CSPM → Findings
+- Look for finding with title: "File changes detected via SSM Inventory"
 
   
 
@@ -208,70 +180,23 @@ Amazon Security Lake can automatically collect and normalize findings from AWS S
 
 ```
 .
-├── lambda_function.py          # Main Lambda handler (imports from layer)
+├── lambda_function.py          # Main Lambda handler
 ├── layer/
 │   ├── helpers.py             # Helper functions for FIM logic
 │   └── requirements.txt       # Python dependencies (python-dateutil)
-├── deploy.sh                  # Automated deployment script (packages, uploads, deploys)
+├── deploy.sh                  # Automated deployment script
 ├── template.yaml              # CloudFormation template
+├── res/
+│   └── architecture.png       # Architecture diagram
 └── README.md                  # This file
 ```
-
-## Troubleshooting
-
-### Deployment Issues
-
-**Issue: "Bucket name should not contain uppercase characters"**
-- The S3 bucket name must be lowercase
-- Solution: The template uses a fixed lowercase name `inventorymonitorfim-{AccountId}-{Region}`
-
-
-
-**Issue: "Stack creation failed"**
-- Check CloudFormation events for details:
-  ```bash
-  aws cloudformation describe-stack-events --stack-name InventoryMonitorFimSample --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`]'
-  ```
-
-**Issue: "pip version warning"**
-- This is just a warning and doesn't affect deployment
-- The script uses `--disable-pip-version-check` to suppress it
-
-### Runtime Issues
-
-**Issue: No findings appearing in Security Hub**
-- Verify EC2 instance has SSM agent running
-- Check inventory was collected: Look for files in S3 bucket under `AWS:File/` prefix
-- Check Lambda logs:
-  ```bash
-  aws logs tail /aws/lambda/fim-change-detector --follow
-  ```
-
-**Issue: Lambda not triggered**
-- Verify S3 event notification is configured:
-  ```bash
-  BUCKET=$(aws cloudformation describe-stacks --stack-name InventoryMonitorFimSample --query 'Stacks[0].Outputs[?OutputKey==`InventoryBucketName`].OutputValue' --output text)
-  aws s3api get-bucket-notification-configuration --bucket $BUCKET
-  ```
-
-**Issue: "Invalid AWS region"**
-- Ensure your AWS CLI is configured with a valid region
-- Check with: `aws configure get region`
-- Set region: `aws configure set region us-east-1`
-
-**Issue: "The security token included in the request is invalid"**
-- Your AWS credentials have expired
-- Solution: Refresh your AWS credentials
-  - For AWS SSO: `aws sso login`
-  - For temporary credentials: Re-run `aws configure` or refresh your session
-  - Verify credentials: `aws sts get-caller-identity`
 
 ## Cleanup
 
 To remove all resources and avoid ongoing costs:
 
 1. **Terminate EC2 test instances**
-2. **Empty the inventory S3 bucket** (required before stack deletion)
+2. **Empty/delete the inventory S3 bucket**
 3. **Delete the CloudFormation stack:**
    ```bash
    aws cloudformation delete-stack --stack-name InventoryMonitorFimSample
