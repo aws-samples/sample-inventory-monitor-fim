@@ -70,5 +70,5 @@ def lambda_handler(event, context):
         if prev_version != current_version:
             try:
                 s3.delete_object(Bucket=bucket, Key=key, VersionId=prev_version)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Delete previous S3 object version failed: {e}")

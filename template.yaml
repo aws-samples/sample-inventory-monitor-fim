@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   File Integrity Monitoring solution using AWS Systems Manager Inventory to collect 
-  file metadata from EC2 instances.a
+  file metadata from EC2 instances.
 
 Parameters:
   DeploymentBucketName:
@@ -21,7 +21,7 @@ Parameters:
   CriticalFilePatterns:
     Type: String
     Default: "^/etc/paymentapp/config.*$"
-    Description: Comma-separated regex patterns for critical files to monitor (e.g., ^/etc/paymentapp/config.*$,^/etc/passwd$)
+    Description: Comma-separated regex patterns for critical files to monitor
   
   FindingSeverity:
     Type: String
@@ -29,13 +29,16 @@ Parameters:
     Description: Severity level for Security Hub findings
 
 Resources:
-  # S3 Bucket for SSM Inventory Data
   InventoryBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "inventorymonitorfim-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration:
         Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -68,7 +71,6 @@ Resources:
               ArnLike:
                 aws:SourceArn: !Sub "arn:aws:ssm:*:${AWS::AccountId}:resource-data-sync/*"
 
-  # SSM Resource Data Sync
   InventoryResourceDataSync:
     Type: AWS::SSM::ResourceDataSync
     DependsOn: InventoryBucketPolicy
@@ -79,7 +81,6 @@ Resources:
         BucketRegion: !Ref AWS::Region
         SyncFormat: JsonSerDe
 
-  # SSM Inventory Association
   InventoryAssociation:
     Type: AWS::SSM::Association
     Properties:
@@ -91,27 +92,18 @@ Resources:
           Values:
             - "*"
       Parameters:
-        applications:
-          - Disabled
-        awsComponents:
-          - Disabled
-        customInventory:
-          - Disabled
+        applications: [Disabled]
+        awsComponents: [Disabled]
+        customInventory: [Disabled]
         files:
           - !Sub |
             [{"Path":"${MonitoredPath}","Pattern":["*"],"Recursive":true}]
-        instanceDetailedInformation:
-          - Disabled
-        networkConfig:
-          - Disabled
-        services:
-          - Disabled
-        windowsRegistry:
-          - Disabled
-        windowsRoles:
-          - Disabled
-        windowsUpdates:
-          - Disabled
+        instanceDetailedInformation: [Disabled]
+        networkConfig: [Disabled]
+        services: [Disabled]
+        windowsRegistry: [Disabled]
+        windowsRoles: [Disabled]
+        windowsUpdates: [Disabled]
 
   FimChangeDetectorRole:
     Type: AWS::IAM::Role
@@ -232,38 +224,26 @@ Outputs:
   InventoryBucketName:
     Description: S3 bucket where SSM Inventory data is stored
     Value: !Ref InventoryBucket
-    Export:
-      Name: !Sub "${AWS::StackName}-InventoryBucket"
   
   ResourceDataSyncName:
     Description: Name of the SSM Resource Data Sync
     Value: !Ref InventoryResourceDataSync
-    Export:
-      Name: !Sub "${AWS::StackName}-DataSync"
   
   InventoryAssociationId:
     Description: ID of the SSM Inventory Association
     Value: !Ref InventoryAssociation
-    Export:
-      Name: !Sub "${AWS::StackName}-Association"
   
   LambdaFunctionName:
     Description: Name of the Lambda function for file integrity monitoring
     Value: !Ref FimChangeDetectorFunction
-    Export:
-      Name: !Sub "${AWS::StackName}-FunctionName"
   
   LambdaFunctionArn:
     Description: ARN of the Lambda function
     Value: !GetAtt FimChangeDetectorFunction.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-FunctionArn"
   
   LayerVersionArn:
     Description: ARN of the Lambda Layer with helper functions
     Value: !Ref FimChangeDetectorLayer
-    Export:
-      Name: !Sub "${AWS::StackName}-LayerArn"
   
   DeploymentRegion:
     Description: AWS Region where the solution is deployed
