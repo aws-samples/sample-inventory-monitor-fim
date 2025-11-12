@@ -26,8 +26,8 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
-DEPLOYMENT_BUCKET=$1
-STACK_NAME=${2:-InventoryMonitorFimSample}
+DEPLOYMENT_BUCKET="$1"
+STACK_NAME="${2:-InventoryMonitorFimSample}"
 
 # Parse optional parameters
 MONITORED_PATH="/etc/paymentapp/"
@@ -62,9 +62,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Get current region
-REGION=${AWS_DEFAULT_REGION:-$(aws configure get region)}
+REGION="${AWS_DEFAULT_REGION:-$(aws configure get region)}"
 if [ -z "$REGION" ] || [ "$REGION" = "None" ]; then
-    REGION=us-east-1
+    REGION="us-east-1"
 fi
 
 echo "🚀 Deploying File Integrity Monitoring Solution"
@@ -105,8 +105,8 @@ echo "✅ Function packaged: fim-change-detector.zip"
 # Step 3: Upload to S3
 echo ""
 echo "📤 Step 3/4: Uploading to S3..."
-aws s3 cp helpers_layer.zip s3://$DEPLOYMENT_BUCKET/layer/helpers_layer.zip
-aws s3 cp fim-change-detector.zip s3://$DEPLOYMENT_BUCKET/lambda/fim-change-detector.zip
+aws s3 cp helpers_layer.zip "s3://$DEPLOYMENT_BUCKET/layer/helpers_layer.zip"
+aws s3 cp fim-change-detector.zip "s3://$DEPLOYMENT_BUCKET/lambda/fim-change-detector.zip"
 echo "✅ Packages uploaded to s3://$DEPLOYMENT_BUCKET/"
 
 # Step 4: Deploy CloudFormation
@@ -114,13 +114,13 @@ echo ""
 echo "☁️  Step 4/4: Deploying CloudFormation stack..."
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name $STACK_NAME \
-    --region $REGION \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
     --parameter-overrides \
-        DeploymentBucketName=$DEPLOYMENT_BUCKET \
+        DeploymentBucketName="$DEPLOYMENT_BUCKET" \
         MonitoredPath="$MONITORED_PATH" \
         CriticalFilePatterns="$FILE_PATTERNS" \
-        FindingSeverity=$SEVERITY \
+        FindingSeverity="$SEVERITY" \
         InventorySchedule="$SCHEDULE" \
     --capabilities CAPABILITY_NAMED_IAM
 
@@ -146,4 +146,4 @@ echo "   3. Modify the test file to trigger a finding"
 echo "      - Check Security Hub → Findings for detection"
 echo ""
 echo "🔍 View stack outputs:"
-echo "   aws cloudformation describe-stacks --stack-name $STACK_NAME --query 'Stacks[0].Outputs'"
+echo "   aws cloudformation describe-stacks --stack-name \"$STACK_NAME\" --query 'Stacks[0].Outputs'"
