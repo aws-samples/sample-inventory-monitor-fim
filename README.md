@@ -137,7 +137,7 @@ You should see all deployed resources including S3 buckets, SSM configurations, 
    - Use Amazon Linux 2 AMI (t3.micro for testing)
    - Under Advanced details → IAM instance profile, select `SSMAccessRole`
    - **Important:** Add a tag with the key and value you configured during deployment (default: `FIM-Enabled=true`). Only EC2 instances with this tag are targeted by the SSM Inventory Association for file monitoring.
-   - Add user data to create test file:
+   - Add User data section (creates a test file):
      ```bash
      #!/bin/bash
      mkdir -p /etc/paymentapp
