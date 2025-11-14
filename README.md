@@ -31,26 +31,30 @@ This sample solution uses the following AWS services:
 
 ### Prerequisites
 
-- [AWS Security Hub CSPM](https://aws.amazon.com/security-hub/cspm/) must be active in the target Region
+- [AWS Security Hub](https://aws.amazon.com/security-hub/) must be enabled in the target Region
 - AWS CLI configured with appropriate credentials and valid region
 - Python 3.9+ and pip installed
 - S3 bucket for Lambda deployment packages
-- VPC with at least 2 private subnets for Lambda deployment
-- Follow least privilege: use a dedicated deployment role with permissions to create CloudFormation stacks, Lambda, IAM, S3, VPC, and SSM resources
-
-**Note:** S3 bucket names must not exceed 63 characters. The template uses shortened names (`fim-inventory-` and `fim-logs-`) to accommodate long account IDs and region names.
+- Follow least privilege: use a dedicated deployment role with permissions to create CloudFormation stacks, Lambda, IAM, S3, and SSM resources
 
 **What Gets Deployed Automatically:**
-- ✅ **S3 Logging Bucket** - Secure bucket for access logs with encryption and private access controls
+- ✅ **S3 Logging Bucket** - Versioned bucket with Object Lock (90-day GOVERNANCE retention) and explicit private ACL for immutable access logs
 - ✅ **S3 Inventory Bucket** - Versioned bucket with encryption, access logging, and private access controls
 - ✅ **S3 Bucket Policy** - Enforces HTTPS-only access and grants SSM permissions
 - ✅ **SSM Resource Data Sync** - Exports inventory data to S3
 - ✅ **SSM Inventory Association** - Schedules file metadata collection from EC2 instances
-- ✅ **Lambda Function & Layer** - Detects file changes with helper functions
-- ✅ **Dead Letter Queue (SQS)** - Captures failed Lambda invocations
-- ✅ **VPC Networking** - Private route table, security groups, and interface endpoints for Security Hub and SQS, plus S3 Gateway endpoint
-- ✅ **IAM Resources** - Lambda execution role with managed policies
-- ✅ **S3 Event Notification** - Triggers Lambda on new inventory data
+- ✅ **Lambda Function & Layer** - Serverless function with reserved concurrency (10) to detect file changes
+- ✅ **Dead Letter Queue (SQS)** - Captures failed Lambda invocations with 14-day retention
+- ✅ **IAM Resources** - Lambda execution role with customer-managed policies
+- ✅ **S3 Event Notification** - Triggers Lambda on new inventory data (filtered to `AWS%3AFile/` prefix for file inventory objects only)
+
+### Deployment Region
+
+The deployment uses your AWS CLI default region, or you can override it with the `AWS_REGION` environment variable:
+
+```bash
+AWS_REGION=us-west-2 ./deploy.sh my-fim-deployment-bucket
+```
 
 ### Deployment Steps
 
@@ -60,75 +64,64 @@ This sample solution uses the following AWS services:
    cd sample-inventory-monitor-fim
    ```
 
-2. **Run the deployment script:**
+2. **Create an S3 bucket for Lambda deployment packages:**
+   ```bash
+   aws s3 mb s3://my-fim-deployment-bucket
+   ```
+   
+   Replace `my-fim-deployment-bucket` with your desired bucket name. This bucket is separate from the logging and inventory buckets created by CloudFormation and does not have Object Lock enabled.
+
+3. **Run the deployment script:**
    ```bash
    chmod +x deploy.sh
-   ./deploy.sh DEPLOYMENT-BUCKET
+   ./deploy.sh my-fim-deployment-bucket
    ```
 
-   The script will:
-   - Package the Lambda Layer with helper functions and dependencies
-   - Package the Lambda function code
-   - Upload both packages to the deployment bucket
-   - Deploy the CloudFormation stack to your AWS CLI configured region (creates S3 bucket, SSM resources, Lambda)
+   Replace `my-fim-deployment-bucket` with the bucket name you created in step 2. The script packages the Lambda code, uploads it to S3, and calls CloudFormation to deploy all resources including Lambda, S3 buckets, and SSM configurations.
    
-   **CloudFormation Stack Parameters:**
-   The deployment accepts the following configurable parameters:
-   - `DeploymentBucketName` (required) - S3 bucket for Lambda code packages
-   - `VpcId` (required) - VPC ID where Lambda will be deployed
-   - `PrivateSubnetIds` (required) - List of private subnet IDs (minimum 2)
-   - `MonitoredPath` (optional) - File path to monitor (default: `/etc/paymentapp/`)
-   - `CriticalFilePatterns` (optional) - Regex patterns for critical files (default: `^/etc/paymentapp/config.*$`)
-   - `FindingSeverity` (optional) - Security Hub finding severity (default: `MEDIUM`)
-   - `InventorySchedule` (optional) - Collection schedule (default: `rate(30 minutes)`)
-   
-   **Note:** The CloudFormation stack deploys to the region configured in your AWS CLI. To deploy to a different region, use:
-   ```bash
-   aws cloudformation deploy --region us-west-2 ...
-   ```
-   Or set the region before running the script:
-   ```bash
-   AWS_DEFAULT_REGION=us-west-2 ./deploy.sh DEPLOYMENT-BUCKET
-   ```
-
    **Usage:**
    ```bash
    ./deploy.sh <deployment-bucket> [stack-name] [options]
    ```
    
-   **Options (configure Lambda function behavior):**
-   - `--monitored-path` - Which file path to monitor for file changes (default: `/etc/paymentapp/`)
-   - `--file-patterns` - Regex patterns to identify critical files that trigger alerts (default: `^/etc/paymentapp/config.*$`)
-   - `--severity` - Severity level for Security Hub findings (default: `MEDIUM`)
-   - `--schedule` - How often to collect file metadata (default: `rate(30 minutes)`)
+   The `stack-name` parameter is optional and defaults to `SSMInventoryFIM`.
+   
+   **Configuration Options:**
+   
+   All options are optional and allow you to customize the Lambda function behavior:
+   
+   | Option | Description | Default Value |
+   |--------|-------------|---------------|
+   | `--monitored-path` | File system path to monitor for changes | `/etc/paymentapp/` |
+   | `--file-patterns` | Regex patterns to identify critical files that trigger alerts | `^/etc/paymentapp/config.*$` |
+   | `--severity` | Severity level for Security Hub findings (INFORMATIONAL, LOW, MEDIUM, HIGH, CRITICAL) | `MEDIUM` |
+   | `--schedule` | How often to collect file metadata from EC2 instances | `rate(30 minutes)` |
+   | `--tag-key` | EC2 tag key to identify instances for inventory collection | `FIM-Enabled` |
+   | `--tag-value` | EC2 tag value to identify instances for inventory collection | `true` |
 
    **Examples:**
    
-   Basic deployment:
+   Basic deployment with default settings:
    ```bash
-   ./deploy.sh my-lambda-code-bucket
-   ```
-   
-   Deploy to specific region:
-   ```bash
-   AWS_DEFAULT_REGION=us-west-2 ./deploy.sh my-lambda-code-bucket
-   ```
-   
-   Custom configuration:
-   ```bash
-   ./deploy.sh my-lambda-code-bucket MyFimStack \
-     --monitored-path /etc/ \
-     --severity HIGH
+   ./deploy.sh my-fim-deployment-bucket
    ```
 
+   Custom configuration with options:
+   ```bash
+   ./deploy.sh my-fim-deployment-bucket MyFimStack \
+     --monitored-path /etc/ \
+     --severity HIGH \
+     --schedule "rate(15 minutes)"
+   ```
+   
 ### Verify Deployment
 
 After deployment, verify the stack outputs:
 ```bash
-aws cloudformation describe-stacks --stack-name InventoryMonitorFimSample --query 'Stacks[0].Outputs'
+aws cloudformation describe-stacks --stack-name SSMInventoryFIM --query 'Stacks[0].Outputs'
 ```
 
-You should see all deployed resources including S3 buckets, SSM configurations, Lambda function with layer and DLQ, VPC networking, and security groups.
+You should see all deployed resources including S3 buckets, SSM configurations, Lambda function with layer and DLQ.
 
 ## Testing the Solution
 
@@ -143,6 +136,7 @@ You should see all deployed resources including S3 buckets, SSM configurations, 
 2. **Launch EC2 instance:**
    - Use Amazon Linux 2 AMI (t3.micro for testing)
    - Under Advanced details → IAM instance profile, select `SSMAccessRole`
+   - **Important:** Add a tag with the key and value you configured during deployment (default: `FIM-Enabled=true`). Only EC2 instances with this tag are targeted by the SSM Inventory Association for file monitoring.
    - Add user data to create test file:
      ```bash
      #!/bin/bash
@@ -183,7 +177,7 @@ The SSM Inventory Association runs on the schedule you configured (default: ever
 
 Amazon Security Lake automatically collects and normalizes findings from AWS Security Hub into OCSF format. Once enabled with Security Hub as a data source, all FIM findings are ingested without code changes. Query data with Amazon Athena and visualize with Amazon QuickSight or Amazon OpenSearch Service. 
 
-      ## Project Structure
+## Project Structure
 
 ```
 .
@@ -206,7 +200,7 @@ To remove all resources and avoid ongoing costs:
 2. **Empty/delete the inventory S3 bucket**
 3. **Delete the CloudFormation stack:**
    ```bash
-   aws cloudformation delete-stack --stack-name InventoryMonitorFimSample
+   aws cloudformation delete-stack --stack-name SSMInventoryFIM
    ```
 4. **Clean up local files:**
    ```bash
@@ -219,31 +213,33 @@ Stack deletion automatically removes all deployed resources.
 
 This CloudFormation template includes security and reliability features:
 
-- **[Reserved Concurrency](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)** - The Lambda function has `ReservedConcurrentExecutions: 10` to prevent runaway executions and control costs
+- **[Reserved Concurrency](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)** - Lambda function limited to 10 concurrent executions to prevent runaway costs (CKV_AWS_115 compliant)
 
-- **[Dead Letter Queue (DLQ)](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async.html#invocation-dlq)** - Failed Lambda invocations are sent to an SQS queue with 14-day retention for troubleshooting and replay
+- **[Dead Letter Queue (DLQ)](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async.html#invocation-dlq)** - Failed invocations sent to SQS with 14-day retention for troubleshooting
 
-- **[VPC Deployment](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html)** - Lambda runs inside private subnets in a VPC for network isolation, with:
-  - Private route table created automatically for VPC endpoint routing
-  - S3 Gateway endpoint and interface endpoints for Security Hub and SQS to keep all network traffic private and avoid NAT Gateway costs
-  - [Security groups](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html) restricting traffic to HTTPS only
-  - No internet gateway dependency
+- **[S3 Explicit Private ACL](https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html)** - Logging bucket has explicit `AccessControl: Private` with `BucketOwnerPreferred` ownership (S3_BUCKET_NO_PUBLIC_RW_ACL compliant)
 
-- **[S3 Access Logging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html)** - The inventory bucket has server access logging enabled to track all requests for auditing and compliance purposes
+- **[S3 Access Logging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html)** - Inventory bucket logs all access requests; logging bucket protected by versioning, Object Lock, and CloudTrail
 
-- **[S3 HTTPS-Only Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html#transit)** - The S3 bucket policy enforces TLS/HTTPS for all connections using `aws:SecureTransport` condition, denying any HTTP requests
+- **[S3 HTTPS-Only Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html#transit)** - Bucket policies enforce TLS/HTTPS using `aws:SecureTransport` condition
 
-- **[S3 Private Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html)** - The inventory bucket has `PublicAccessBlockConfiguration` enabled with all four settings to ensure complete privacy
+- **[S3 Private Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html)** - All buckets have `PublicAccessBlockConfiguration` enabled
 
-- **[Managed IAM Policies](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html)** - Uses customer-managed IAM policies instead of inline policies for easier reuse, auditing, and centralized updates
+- **[Customer-Managed IAM Policies](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html)** - Dedicated managed policies for easier reuse and centralized updates
+
+- **[S3 Versioning](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html)** - All buckets have versioning enabled to preserve historical versions
+
+- **[S3 Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html)** - Logging bucket uses GOVERNANCE mode (90-day retention) for immutable audit logs
 
 ### Additional Security Options
 
-* **[Encrypt Lambda environment variables with a customer-managed KMS key](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html#configuration-envvars-encryption)** - Use your own KMS key for full control over key rotation, audit access, and revocation
+* **[VPC Deployment](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html)** - For enhanced network isolation, deploy Lambda in private subnets with VPC endpoints for S3, Security Hub, and SQS. This adds operational complexity but provides additional network-level security controls.
 
-* **[Enable S3 Replication for compliance or disaster recovery](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)** - Copy inventory data to another region or account for data redundancy and compliance
+* **[Encrypt Lambda environment variables with a customer-managed KMS key](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html#configuration-envvars-encryption)** - Use your own KMS key for full control over key rotation and access
 
-* **[Enable AWS CloudTrail Data Events for S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/cloudtrail-logging-s3-info.html)** - CloudTrail data events log object-level actions on your inventory bucket, including user identity details for audits and investigations; configure this manually after deployment.
+* **[Enable S3 Replication for compliance or disaster recovery](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)** - Copy inventory data to another region or account for redundancy
+
+* **[Enable AWS CloudTrail Data Events for S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/cloudtrail-logging-s3-info.html)** - Log object-level actions with user identity details for audits
 
 ## License
 

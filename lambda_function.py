@@ -10,6 +10,9 @@ CRITICAL_FILE_PATTERNS = os.environ["CRITICAL_FILE_PATTERNS"].split(",")
 SEVERITY_LABEL = os.environ["SEVERITY_LABEL"]
 
 def lambda_handler(event, context):
+    # Safe event handling
+    if "Records" not in event or not event["Records"]:
+        return
 
     # Extract S3 event
     record = event['Records'][0]
@@ -40,13 +43,13 @@ def lambda_handler(event, context):
     # Compare
     created = {p for p in set(current) - set(previous) if is_critical(p)}
     deleted = {p for p in set(previous) - set(current) if is_critical(p)}
-    modified = {p for p in set(current) & set(previous) if is_modified(p, current, previous)}
+    modified = {p for p in set(current) & set(previous) if is_critical(p) and is_modified(p, current, previous)}
 
     # Report if changes were found
     if created or deleted or modified:
         instance_id = extract_instance_id(bucket, key, current_version)
         now = datetime.now(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-        finding = [{
+        finding = {
             "SchemaVersion": "2018-10-08",
             "Id": f"fim-{instance_id}-{now}",
             "ProductArn": f"arn:aws:securityhub:{region}:{account_id}:product/{account_id}/default",
@@ -62,8 +65,8 @@ def lambda_handler(event, context):
                 f"{len(deleted)} deleted file(s) on instance {instance_id}"
             ),
             "Resources": [{"Type": "AwsEc2Instance", "Id": instance_id}]
-        }]
-        securityhub.batch_import_findings(Findings=finding)
+        }
+        securityhub.batch_import_findings(Findings=[finding])
 
     # No change – delete older S3 version
     else:

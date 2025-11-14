@@ -31,24 +31,41 @@ Parameters:
     Default: "MEDIUM"
     Description: Severity level for Security Hub findings
 
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC ID where the Lambda function will be deployed
+  InventoryTagKey:
+    Type: String
+    Default: "FIM-Enabled"
+    Description: Tag key to identify EC2 instances for inventory collection
 
-  PrivateSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: List of private subnet IDs for Lambda function (minimum 2 for high availability)
+  InventoryTagValue:
+    Type: String
+    Default: "true"
+    Description: Tag value to identify EC2 instances for inventory collection
 
 # ------------------------------------------------------------------------
 # Resources
 # ------------------------------------------------------------------------
 Resources:
   # S3 bucket for access logs (must be created first)
+  # Note: This is the central logging bucket and does not have its own LoggingConfiguration
+  # because S3 does not support self-logging (a bucket cannot log to itself).
+  # Access to this bucket is protected by versioning, Object Lock, encryption, and CloudTrail.
   LoggingBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "fim-logs-${AWS::AccountId}-${AWS::Region}"
-      AccessControl: LogDeliveryWrite
+      AccessControl: Private
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      VersioningConfiguration:
+        Status: Enabled
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: GOVERNANCE
+            Days: 90
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -59,12 +76,50 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
+  # Bucket policy for LoggingBucket to allow S3 log delivery
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${LoggingBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: EnforceTLS
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt LoggingBucket.Arn
+              - !Sub "${LoggingBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # Allow S3 bucket to invoke the Lambda function
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FimChangeDetectorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::fim-inventory-${AWS::AccountId}-${AWS::Region}"
+
   # S3 bucket to store Systems Manager Inventory snapshots
   InventoryBucket:
     Type: AWS::S3::Bucket
-    DependsOn:
-      - S3InvokeLambdaPermission
+    DependsOn: 
       - LoggingBucket
+      - S3InvokeLambdaPermission
     Properties:
       BucketName: !Sub "fim-inventory-${AWS::AccountId}-${AWS::Region}"
       AccessControl: Private
@@ -88,6 +143,11 @@ Resources:
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:Put
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: "AWS%3AFile/"
             Function: !GetAtt FimChangeDetectorFunction.Arn
 
   # S3 bucket policy for SSM Resource Data Sync delivery
@@ -114,6 +174,13 @@ Resources:
               StringEquals:
                 s3:x-amz-acl: bucket-owner-full-control
                 aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: SSMBucketDeliveryArnCheck
+            Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${InventoryBucket.Arn}/*"
+            Condition:
               ArnLike:
                 aws:SourceArn: !Sub "arn:aws:ssm:*:${AWS::AccountId}:resource-data-sync/*"
           # Enforce HTTPS access only
@@ -147,9 +214,9 @@ Resources:
       AssociationName: !Sub "${AWS::StackName}-file-inventory"
       ScheduleExpression: !Ref InventorySchedule
       Targets:
-        - Key: InstanceIds
+        - Key: !Sub "tag:${InventoryTagKey}"
           Values:
-            - "*"
+            - !Ref InventoryTagValue
       Parameters:
         applications: [Disabled]
         awsComponents: [Disabled]
@@ -172,90 +239,6 @@ Resources:
       MessageRetentionPeriod: 1209600  # 14 days
       KmsMasterKeyId: alias/aws/sqs
 
-  # Security Group for Lambda function in VPC
-  LambdaSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for FIM Lambda function
-      VpcId: !Ref VpcId
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          DestinationPrefixListId: !GetAtt S3VpcEndpoint.PrefixListId
-          Description: Allow HTTPS to S3 via prefix list
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          DestinationSecurityGroupId: !Ref VpcEndpointSecurityGroup
-          Description: Allow HTTPS to VPC endpoints (Security Hub, SQS)
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-lambda-sg"
-
-  # Route table for private subnets (required for S3 Gateway endpoint)
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VpcId
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-rt"
-
-  # Security Group for VPC Endpoints
-  VpcEndpointSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for VPC endpoints
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          SourceSecurityGroupId: !Ref LambdaSecurityGroup
-          Description: Allow HTTPS from Lambda
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          DestinationPrefixListId: !GetAtt S3VpcEndpoint.PrefixListId
-          Description: Allow HTTPS egress to S3 via prefix list
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-vpc-endpoint-sg"
-
-  # VPC Endpoints for AWS services to avoid NAT Gateway costs
-  S3VpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VpcId
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
-      VpcEndpointType: Gateway
-      RouteTableIds:
-        - !Ref PrivateRouteTable
-
-  SecurityHubVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VpcId
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.securityhub"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds:
-        - !Ref VpcEndpointSecurityGroup
-
-  SQSVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VpcId
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sqs"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds:
-        - !Ref VpcEndpointSecurityGroup
-
   # Managed IAM Policy for FIM Lambda function
   FimChangeDetectorManagedPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -274,8 +257,8 @@ Resources:
               - s3:ListBucketVersions
               - s3:DeleteObjectVersion
             Resource:
-              - !GetAtt InventoryBucket.Arn
-              - !Sub "${InventoryBucket.Arn}/*"
+              - !Sub "arn:aws:s3:::fim-inventory-${AWS::AccountId}-${AWS::Region}"
+              - !Sub "arn:aws:s3:::fim-inventory-${AWS::AccountId}-${AWS::Region}/*"
           - Effect: Allow
             Action: sqs:SendMessage
             Resource: !GetAtt FimChangeDetectorDLQ.Arn
@@ -293,7 +276,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !Ref FimChangeDetectorManagedPolicy
 
   # Lambda layer with helper functions for FIM logic
@@ -303,8 +285,8 @@ Resources:
       LayerName: fim-change-detector-helpers
       Description: Helper functions for File Integrity Monitoring
       CompatibleRuntimes:
-        - python3.13
         - python3.12
+        - python3.11
       Content:
         S3Bucket: !Ref DeploymentBucketName
         S3Key: layer/helpers_layer.zip
@@ -315,12 +297,12 @@ Resources:
     Properties:
       FunctionName: fim-change-detector
       Description: Detects file changes by comparing SSM Inventory versions and creates Security Hub findings
-      Runtime: python3.13
+      Runtime: python3.12
       Role: !GetAtt FimChangeDetectorRole.Arn
       Handler: lambda_function.lambda_handler
-      Timeout: 60
+      Timeout: 120
       MemorySize: 256
-      ReservedConcurrentExecutions: 10
+      ReservedConcurrentExecutions: 10  # Limit concurrency to cap blast-radius and cost
       Code:
         S3Bucket: !Ref DeploymentBucketName
         S3Key: lambda/fim-change-detector.zip
@@ -328,31 +310,17 @@ Resources:
         - !Ref FimChangeDetectorLayer
       DeadLetterConfig:
         TargetArn: !GetAtt FimChangeDetectorDLQ.Arn
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
-        SubnetIds: !Ref PrivateSubnetIds
       Environment:
         Variables:
           CRITICAL_FILE_PATTERNS: !Ref CriticalFilePatterns
           SEVERITY_LABEL: !Ref FindingSeverity
-
-  # Allow S3 bucket to invoke the Lambda function
-  S3InvokeLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref FimChangeDetectorFunction
-      Action: lambda:InvokeFunction
-      Principal: s3.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub "arn:aws:s3:::fim-inventory-${AWS::AccountId}-${AWS::Region}"
 
 # ------------------------------------------------------------------------
 # Outputs
 # ------------------------------------------------------------------------
 Outputs:
   LoggingBucketName:
-    Description: S3 bucket for access logs
+    Description: S3 bucket for access logs with versioning and Object Lock
     Value: !Ref LoggingBucket
 
   InventoryBucketName:
@@ -386,22 +354,6 @@ Outputs:
   DeadLetterQueueArn:
     Description: ARN of the Dead Letter Queue
     Value: !GetAtt FimChangeDetectorDLQ.Arn
-
-  LambdaSecurityGroupId:
-    Description: Security Group ID for the Lambda function
-    Value: !Ref LambdaSecurityGroup
-
-  S3VpcEndpointId:
-    Description: VPC Endpoint ID for S3
-    Value: !Ref S3VpcEndpoint
-
-  SecurityHubVpcEndpointId:
-    Description: VPC Endpoint ID for Security Hub
-    Value: !Ref SecurityHubVpcEndpoint
-
-  SQSVpcEndpointId:
-    Description: VPC Endpoint ID for SQS
-    Value: !Ref SQSVpcEndpoint
 
   DeploymentRegion:
     Description: AWS Region where the solution is deployed
