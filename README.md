@@ -1,6 +1,6 @@
 # sample-inventory-monitor-fim
 
-> **⚠️ Note:** This is an implementation for demonstration purposes. It is a sample and not production-ready tool.
+> **⚠️ Note:** This is an implementation for demonstration purposes. It is a sample and not production-ready tool. This sample is provided for non-production use only. Customers must review and meet their own security, regulatory, and compliance requirements before deployment.
 
 ## Overview
 
@@ -175,7 +175,9 @@ The SSM Inventory Association runs on the schedule you configured (default: ever
 
 ## Amazon Security Lake Integration (Optional)
 
-Amazon Security Lake automatically collects and normalizes findings from AWS Security Hub into OCSF format. Once enabled with Security Hub as a data source, all FIM findings are ingested without code changes. Query data with Amazon Athena and visualize with Amazon QuickSight or Amazon OpenSearch Service. 
+Amazon Security Lake automatically collects and normalizes findings from AWS Security Hub into OCSF format. Once enabled with Security Hub as a data source, all FIM findings are ingested without code changes. Query data with Amazon Athena and visualize with Amazon QuickSight or Amazon OpenSearch Service.
+
+**Note:** Security Lake processes findings before they appear in Athena, so expect a short delay between ingestion and data availability. 
 
 ## Project Structure
 
