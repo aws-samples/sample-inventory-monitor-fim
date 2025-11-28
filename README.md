@@ -244,6 +244,8 @@ This CloudFormation template includes security and reliability features:
 
 * **[Enable AWS CloudTrail Data Events for S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/cloudtrail-logging-s3-info.html)** - Log object-level actions with user identity details for audits
 
+* **[Enable Lambda Code Signing](https://docs.aws.amazon.com/lambda/latest/dg/configuration-codesigning.html)** - Ensure only trusted, digitally signed code can be deployed to Lambda functions to prevent unauthorized modifications
+
 ## License
 
 This sample is licensed under the **MIT-0 License**. See [LICENSE](./LICENSE) for details.
