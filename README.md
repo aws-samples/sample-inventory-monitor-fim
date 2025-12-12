@@ -39,7 +39,7 @@ This sample solution uses the following AWS services:
 - Follow least privilege: use a dedicated deployment role with permissions to create CloudFormation stacks, Lambda, IAM, S3, and SSM resources
 
 **What Gets Deployed Automatically:**
-- ✅ **S3 Logging Bucket** - Versioned bucket with Object Lock (90-day GOVERNANCE retention) and explicit private ACL for immutable access logs
+- ✅ **S3 Logging Bucket** - Versioned bucket with Object Lock and explicit private ACL for immutable access logs
 - ✅ **S3 Inventory Bucket** - Versioned bucket with encryption, access logging, and private access controls
 - ✅ **S3 Bucket Policy** - Enforces HTTPS-only access and grants SSM permissions
 - ✅ **SSM Resource Data Sync** - Exports inventory data to S3
@@ -216,13 +216,13 @@ Stack deletion automatically removes all deployed resources.
 
 This CloudFormation template includes security and reliability features:
 
-- **[Reserved Concurrency](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)** - Lambda function limited to 10 concurrent executions to prevent runaway costs (CKV_AWS_115 compliant)
+- **[Reserved Concurrency](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)** - Lambda function limited to 10 concurrent executions to prevent runaway costs
 
 - **[Dead Letter Queue (DLQ)](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async.html#invocation-dlq)** - Failed invocations sent to SQS with 14-day retention for troubleshooting
 
-- **[S3 Explicit Private ACL](https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html)** - Logging bucket has explicit `AccessControl: Private` with `BucketOwnerPreferred` ownership (S3_BUCKET_NO_PUBLIC_RW_ACL compliant)
+- **[S3 Explicit Private ACL](https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html)** - Logging bucket has explicit `AccessControl: Private` with `BucketOwnerPreferred` ownership
 
-- **[S3 Access Logging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html)** - Inventory bucket logs all access requests; logging bucket protected by versioning, Object Lock, and CloudTrail
+- **[S3 Access Logging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html)** - Inventory bucket logs all access requests
 
 - **[S3 HTTPS-Only Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html#transit)** - Bucket policies enforce TLS/HTTPS using `aws:SecureTransport` condition
 
