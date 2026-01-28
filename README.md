@@ -1,7 +1,7 @@
 # sample-inventory-monitor-fim
 > **⚠️ Important:** Sample code, software libraries, command line tools, proofs of concept, templates, or other related technology are provided as AWS Content or Third-Party Content under the AWS Customer Agreement, or the relevant written agreement between you and AWS (whichever applies). You should not use this AWS Content or Third-Party Content in your production accounts, or on production or other critical data. You are responsible for testing, securing, and optimizing the AWS Content or Third-Party Content, such as sample code, as appropriate for production grade use based on your specific quality control practices and standards. Deploying AWS Content or Third-Party Content may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage.
 
-> **⚠️ Note:** This is an implementation for demonstration purposes. It is a sample and not production-ready tool. This sample is provided for non-production use only. Customers must review and meet their own security requirements before deployment.
+> **⚠️ Note:** This is an implementation for demonstration purposes. It is a sample and not production-ready solution. This sample is provided for non-production use only. Customers must review and meet their own security requirements before deployment.
 
 ## Overview
 
@@ -12,6 +12,10 @@ The example focuses on **File Integrity Monitoring (FIM)**, but the same approac
 - Network configurations  
 - OS patches and updates  
 - Custom inventory items  
+
+### Learn More
+
+For a detailed explanation of this solution and its security implications, check out the [AWS blog on File Integrity Monitoring with AWS Systems Manager and Amazon Security Lake](https://aws.amazon.com/blogs/security/file-integrity-monitoring-with-aws-systems-manager-and-amazon-security-lake/). This AWS Secrurity blog post covers the architecture and deployment steps to help you implement a similar solution.
 
 ## Architecture
 
